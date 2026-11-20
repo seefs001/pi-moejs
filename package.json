@@ -1,0 +1,33 @@
+{
+  "name": "pi-moejs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run Pi tool orchestration scripts in a persistent MoeJS sidecar.",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seefs001/pi-moejs.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "@earendil-works/pi-codemode": "1.6.0"
+  },
+  "scripts": {
+    "build:helper": "node build.mjs"
+  }
+}
