@@ -1,8 +1,8 @@
 {
   "name": "pi-moejs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Run Pi tool orchestration scripts in a persistent MoeJS sidecar.",
+  "description": "Replace Pi’s built-in codemode sandbox with MoeJS.",
   "type": "module",
   "keywords": [
     "pi-package"
