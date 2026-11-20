@@ -47,7 +47,7 @@ export default function moejs(pi: ExtensionAPI) {
 
   pi.registerTool({
     name, label: 'codemode (MoeJS)', exposure: 'model-only', executionMode: 'sequential',
-    description: 'Run a JavaScript async function body in MoeJS. Use await tools.name(args) to call Pi tools; use ALL_TOOLS for names and signatures. Use return, text(), image(), console, store()/load(). No Node APIs, network or timers. Example: return await tools.read({path:"README.md",limit:10}).',
+    description: 'Run a JavaScript async function body in MoeJS. Use await tools.name(args) to call Pi tools; use ALL_TOOLS for names and signatures. Use return, text(), image(), console, store()/load(). Run `return codemodeRuntime()` to identify the live engine, module version and helper PID. No Node APIs, network or timers. Example: return await tools.read({path:"README.md",limit:10}).',
     parameters: Type.Object({ code: Type.String({ description: 'JavaScript source, optionally preceded by a // @options: JSON line' }) }),
     constrainedSampling: { type: 'grammar', variants: { openai_lark: CODEMODE_SOURCE_GRAMMAR } },
     reachesTools: () => 'all',

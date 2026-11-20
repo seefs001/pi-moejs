@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"reflect"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -58,6 +61,28 @@ func (w wire) execute(pre *js.Script, p packet) {
 	watchdog := time.AfterFunc(time.Duration(p.TimeoutMs)*time.Millisecond+5*time.Second, func() { os.Exit(124) })
 	defer watchdog.Stop()
 	rt := js.NewRuntime(js.Options{MutableIntrinsics: true, MemoryLimit: p.MemoryLimitBytes})
+	// Install before the Pi prelude locks the globals. This call stays in the helper.
+	if err := rt.SetGlobal("codemodeRuntime", js.NativeFunc(func(_ *js.Realm, _ js.Value, _ []js.Value) (js.Value, error) {
+		pkg := reflect.TypeOf(rt).Elem().PkgPath()
+		info := message{"engine": path.Base(pkg), "module": pkg, "version": nil, "pid": os.Getpid()}
+		if build, ok := debug.ReadBuildInfo(); ok {
+			for _, dep := range build.Deps {
+				if dep.Path != pkg {
+					continue
+				}
+				if dep.Replace != nil {
+					dep = dep.Replace
+				}
+				if dep.Version != "" {
+					info["version"] = dep.Version
+				}
+				break
+			}
+		}
+		return rt.FromGo(info)
+	})); err != nil {
+		panic(err)
+	}
 	u := js.Undefined()
 	var terminal message
 	bridge := check(rt.FromGo(js.NativeFunc(func(r *js.Realm, _ js.Value, args []js.Value) (js.Value, error) {

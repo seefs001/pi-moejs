@@ -1,6 +1,6 @@
 {
   "name": "pi-moejs",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Replace Pi’s built-in codemode sandbox with MoeJS.",
   "type": "module",

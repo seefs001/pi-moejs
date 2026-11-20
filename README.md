@@ -22,6 +22,18 @@ node build.mjs
 pi -e ./index.ts --tools read,codemode
 ```
 
+## Verify the running engine
+
+Ask Pi: **“Call `codemode` with the following script and show me the tool result.”**
+
+```js
+return globalThis.codemodeRuntime?.() ?? 'No pi-moejs runtime probe';
+```
+
+With this extension (0.3.0+), a native function in the executing Go helper returns `engine` (`moejs`), `module` (`github.com/MoeForge/moejs`), `version` (such as `v0.1.1`), and `pid`. The module comes from the active runtime's Go type and the version from the running binary's build information (null when unavailable). Stock Pi QuickJS and older plugin versions have no probe; absence alone does not identify an engine.
+
+For an independent check on macOS/Linux, run `ps -p <pid> -o pid=,comm=` in a terminal before the helper idles out. The PID should identify `moejs-helper`. This diagnoses which local backend answered; it is not cryptographic attestation against a modified host.
+
 ## Script example
 
 This is the `code` argument to `codemode`. Only the summary goes back to the model.
