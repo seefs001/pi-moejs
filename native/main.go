@@ -1,4 +1,3 @@
-// moejs-helper reads one Pi script at a time over a private stdio pipe.
 package main
 
 import (
@@ -19,6 +18,8 @@ import (
 //go:embed prelude.js
 var prelude string
 
+const hostGracePeriod = 5 * time.Second
+
 type packet struct {
 	Run                   int    `json:"run"`
 	Type                  string `json:"type"`
@@ -30,11 +31,13 @@ type packet struct {
 	OK                    bool
 	Payload               *string
 }
+
 type message = map[string]any
 
 type wire struct {
-	in  *json.Decoder
-	out *json.Encoder
+	in   *json.Decoder
+	out  *json.Encoder
+	info message
 }
 
 func (w wire) send(run int, msg message) {
@@ -44,60 +47,78 @@ func (w wire) send(run int, msg message) {
 	}
 }
 
-// Collapse Go API errors at the per-script boundary, never continue using a failed realm.
-func check[T any](v T, err error) T {
+func must[T any](v T, err error) T {
 	if err != nil {
 		panic(err)
 	}
 	return v
 }
+
+func mustOK(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
+func buildRuntimeInfo() message {
+	pkg := reflect.TypeOf((*js.Runtime)(nil)).Elem().PkgPath()
+	info := message{
+		"engine":  path.Base(pkg),
+		"module":  pkg,
+		"version": nil,
+		"pid":     os.Getpid(),
+	}
+	if build, ok := debug.ReadBuildInfo(); ok {
+		for _, dep := range build.Deps {
+			if dep.Path != pkg {
+				continue
+			}
+			if dep.Replace != nil {
+				dep = dep.Replace
+			}
+			if dep.Version != "" {
+				info["version"] = dep.Version
+			}
+			break
+		}
+	}
+	return info
+}
+
+func newRuntime(memoryLimitBytes int64, info message) *js.Runtime {
+	rt := js.NewRuntime(js.Options{MutableIntrinsics: true, MemoryLimit: memoryLimitBytes})
+	mustOK(rt.SetGlobal("codemodeRuntime", js.NativeFunc(func(_ *js.Realm, _ js.Value, _ []js.Value) (js.Value, error) {
+		return rt.FromGo(info)
+	})))
+	return rt
+}
+
 func (w wire) execute(pre *js.Script, p packet) {
 	defer func() {
 		if e := recover(); e != nil {
 			w.send(p.Run, message{"type": "crash", "message": fmt.Sprint(e)})
 		}
 	}()
-	// Normally Node enforces the deadline and kills us. Also exit if it dies mid-script.
-	watchdog := time.AfterFunc(time.Duration(p.TimeoutMs)*time.Millisecond+5*time.Second, func() { os.Exit(124) })
+	deadline := time.Duration(p.TimeoutMs)*time.Millisecond + hostGracePeriod
+	watchdog := time.AfterFunc(deadline, func() { os.Exit(124) })
 	defer watchdog.Stop()
-	rt := js.NewRuntime(js.Options{MutableIntrinsics: true, MemoryLimit: p.MemoryLimitBytes})
-	// Install before the Pi prelude locks the globals. This call stays in the helper.
-	if err := rt.SetGlobal("codemodeRuntime", js.NativeFunc(func(_ *js.Realm, _ js.Value, _ []js.Value) (js.Value, error) {
-		pkg := reflect.TypeOf(rt).Elem().PkgPath()
-		info := message{"engine": path.Base(pkg), "module": pkg, "version": nil, "pid": os.Getpid()}
-		if build, ok := debug.ReadBuildInfo(); ok {
-			for _, dep := range build.Deps {
-				if dep.Path != pkg {
-					continue
-				}
-				if dep.Replace != nil {
-					dep = dep.Replace
-				}
-				if dep.Version != "" {
-					info["version"] = dep.Version
-				}
-				break
-			}
-		}
-		return rt.FromGo(info)
-	})); err != nil {
-		panic(err)
-	}
+
+	rt := newRuntime(p.MemoryLimitBytes, w.info)
 	u := js.Undefined()
 	var terminal message
-	bridge := check(rt.FromGo(js.NativeFunc(func(r *js.Realm, _ js.Value, args []js.Value) (js.Value, error) {
+	bridge := must(rt.FromGo(js.NativeFunc(func(r *js.Realm, _ js.Value, args []js.Value) (js.Value, error) {
 		if terminal != nil {
 			return u, nil
 		}
 		v := func(i int) js.Value { return js.Arg(args, i) }
-		s := func(i int) string { return check(r.ToString(v(i))).GoString() }
+		s := func(i int) string { return must(r.ToString(v(i))).GoString() }
 		switch kind := s(0); kind {
 		case "call", "global":
 			target := "tool"
 			if kind == "global" {
 				target = "global"
 			}
-			m := message{"type": "call", "target": target, "name": s(2), "id": check(strconv.Atoi(s(1)))}
+			m := message{"type": "call", "target": target, "name": s(2), "id": must(strconv.Atoi(s(1)))}
 			if !v(3).IsUndefined() {
 				m["args"] = s(3)
 			}
@@ -127,15 +148,17 @@ func (w wire) execute(pre *js.Script, p packet) {
 		}
 		return u, nil
 	})))
-	init := check(rt.RunScript(pre))
-	api := check(rt.CallFunction(init, u, bridge, js.String(string(p.Tools)), js.String(string(p.Globals)), js.String(string(p.Store))))
-	entry := check(rt.Get(api, "run"))
-	settle := check(rt.Get(api, "settle"))
-	stalled := check(rt.Get(api, "stalled"))
-	fn := check(rt.RunScript(check(js.CompileScript("moe-codemode.js", "(async (tools, console) => {"+p.Code+"\n})"))))
-	check(rt.CallFunction(entry, api, fn))
+
+	init := must(rt.RunScript(pre))
+	api := must(rt.CallFunction(init, u, bridge, js.String(string(p.Tools)), js.String(string(p.Globals)), js.String(string(p.Store))))
+	entry := must(rt.Get(api, "run"))
+	settle := must(rt.Get(api, "settle"))
+	stalled := must(rt.Get(api, "stalled"))
+	fn := must(rt.RunScript(must(js.CompileScript("codemode.js", "(async (tools, console) => {"+p.Code+"\n})"))))
+	must(rt.CallFunction(entry, api, fn))
+
 	for terminal == nil {
-		check(rt.CallFunction(stalled, api))
+		must(rt.CallFunction(stalled, api))
 		if terminal != nil {
 			break
 		}
@@ -153,15 +176,19 @@ func (w wire) execute(pre *js.Script, p packet) {
 		if reply.Payload != nil {
 			value = js.String(*reply.Payload)
 		}
-		check(rt.CallFunction(settle, api, js.Int(reply.ID), js.Bool(reply.OK), value))
+		must(rt.CallFunction(settle, api, js.Int(reply.ID), js.Bool(reply.OK), value))
 	}
-	// Emit done only after the VM has returned; the host may now reuse the pipe.
 	w.send(p.Run, terminal)
 }
+
 func main() {
-	w := wire{json.NewDecoder(os.Stdin), json.NewEncoder(os.Stdout)}
+	w := wire{
+		in:   json.NewDecoder(os.Stdin),
+		out:  json.NewEncoder(os.Stdout),
+		info: buildRuntimeInfo(),
+	}
 	w.out.SetEscapeHTML(false)
-	pre := check(js.CompileScript("pi-prelude.js", prelude))
+	pre := must(js.CompileScript("codemode-prelude.js", prelude))
 	for {
 		var p packet
 		err := w.in.Decode(&p)
@@ -175,7 +202,8 @@ func main() {
 		switch p.Type {
 		case "run":
 			w.execute(pre, p)
-		case "result": // late result for a completed run
+		case "result":
+			continue
 		default:
 			fmt.Fprintln(os.Stderr, "invalid protocol message")
 			os.Exit(1)

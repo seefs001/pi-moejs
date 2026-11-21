@@ -5,33 +5,54 @@ import { basename, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-const native = fileURLToPath(new URL('./native/', import.meta.url));
-const bin = fileURLToPath(new URL('./bin/', import.meta.url));
-const exec = promisify(execFile);
+const nativeDir = fileURLToPath(new URL('./native/', import.meta.url));
+const binDir = fileURLToPath(new URL('./bin/', import.meta.url));
+const execFileAsync = promisify(execFile);
 
-// Cache by source, target and dependency checksums. Do not build at install or Pi startup.
+export const HELPER_INPUTS = ['go.mod', 'go.sum', 'main.go', 'prelude.js'];
+
 export async function ensureHelper(signal) {
   const hash = createHash('sha256');
-  for (const file of ['go.mod', 'go.sum', 'main.go', 'prelude.js']) hash.update(await readFile(join(native, file)));
-  const target = join(bin, `${process.platform}-${process.arch}-${hash.digest('hex').slice(0, 16)}`);
-  const binary = join(target, process.platform === 'win32' ? 'moejs-helper.exe' : 'moejs-helper');
-  try { await access(binary); return binary; } catch (e) { if (e.code !== 'ENOENT') throw e; }
-  await mkdir(target, { recursive: true });
-  const temp = await mkdtemp(join(target, 'build-'));
+  for (const file of HELPER_INPUTS) {
+    hash.update(await readFile(join(nativeDir, file)));
+  }
+  const targetDir = join(binDir, `${process.platform}-${process.arch}-${hash.digest('hex').slice(0, 16)}`);
+  const binaryPath = join(targetDir, process.platform === 'win32' ? 'moejs-helper.exe' : 'moejs-helper');
   try {
-    const artifact = join(temp, basename(binary));
-    await exec('go', ['build', '-mod=readonly', '-trimpath', '-o', artifact, '.'], {
-      cwd: native, signal, timeout: 180_000,
+    await access(binaryPath);
+    return binaryPath;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  await mkdir(targetDir, { recursive: true });
+  const tempDir = await mkdtemp(join(targetDir, 'build-'));
+  try {
+    const artifactPath = join(tempDir, basename(binaryPath));
+    await execFileAsync('go', ['build', '-mod=readonly', '-trimpath', '-o', artifactPath, '.'], {
+      cwd: nativeDir,
+      signal,
+      timeout: 180_000,
       env: { ...process.env, GOWORK: 'off', CGO_ENABLED: '0', GOOS: '', GOARCH: '' },
     });
-    await rename(artifact, binary);
-    return binary;
+    await rename(artifactPath, binaryPath);
+    return binaryPath;
   } catch (error) {
-    if (error.code === 'ENOENT') throw new Error('Building the MoeJS helper requires Go 1.25+ on PATH. Install Go and retry.');
+    if (error?.code === 'ENOENT') {
+      throw new Error('Go 1.25+ is required on PATH to build moejs-helper.', { cause: error });
+    }
     throw error;
   } finally {
-    await rm(temp, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true });
   }
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) ensureHelper().then(console.log).catch(error => { console.error(error.message); process.exitCode = 1; });
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  ensureHelper()
+    .then((binaryPath) => {
+      console.log(binaryPath);
+    })
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    });
+}

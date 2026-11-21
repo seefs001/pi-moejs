@@ -1,8 +1,8 @@
 {
   "name": "pi-moejs",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "private": true,
-  "description": "Replace Pi’s built-in codemode sandbox with MoeJS.",
+  "description": "Replace Pi's built-in codemode tool with MoeJS.",
   "type": "module",
   "keywords": [
     "pi-package"
@@ -28,6 +28,11 @@
     "@earendil-works/pi-codemode": "1.6.0"
   },
   "scripts": {
-    "build:helper": "node build.mjs"
+    "build:helper": "node build.mjs",
+    "lint": "oxlint && node lint/check.mjs",
+    "test": "go test -C native ./..."
+  },
+  "devDependencies": {
+    "oxlint": "1.94.0"
   }
 }

@@ -1,20 +1,18 @@
 # pi-moejs
 
-Run JavaScript tool calls in [Pi](https://github.com/earendil-works/pi) with [MoeJS](https://github.com/MoeForge/moejs). The extension **replaces Pi's built-in `codemode` tool**. The model calls `codemode`, and scripts run in MoeJS instead of QuickJS. There is no `moe_codemode` alias or fallback to QuickJS. Pi's host process and other tools are unchanged.
+Replaces Pi's built-in `codemode` runtime with [MoeJS](https://github.com/MoeForge/moejs). Scripts run through the same `codemode` tool and Pi's nested tool pipeline.
 
 ## Install
 
-Tested with Pi 1.6.0 on macOS arm64. For a private GitHub repository, Git must already have read access. The first call needs Go 1.25+ on `PATH`, a writable package directory, and access to the Go modules (network or a populated Go cache).
+Requires Pi 1.6.0 and Go 1.25+ on `PATH`.
 
 ```sh
 pi install git:github.com/seefs001/pi-moejs
 ```
 
-If upgrading from 0.1.x, run `pi update --extension git:github.com/seefs001/pi-moejs` and change any explicit `moe_codemode` tool selection to `codemode`. Existing `+codemode` selections work unchanged. Start a new Pi session or run `/reload`. Ask Pi: **“Use `codemode` to read `package.json` and return just the package name.”**
+Start a new Pi session or run `/reload`. Pi skips its built-in `codemode` extension automatically when another extension registers `codemode`. Run `pi remove git:github.com/seefs001/pi-moejs` and reload to switch back to QuickJS.
 
-Pi 1.6.0 marks its built-in extension as replaceable. Installing this package is enough; you do not need to disable `builtin:codemode` or patch Pi. A startup warning that the built-in extension “was not loaded” is expected: it confirms Pi selected the replacement. To restore the stock QuickJS implementation, remove this package with `pi remove git:github.com/seefs001/pi-moejs` and reload.
-
-The helper is built on first use, not during installation. The binary is cached under the package's `bin/` directory by source hash, OS and architecture. From a checkout, you can prebuild it with `node build.mjs` or run the extension without installing it:
+The Go helper compiles on first use and caches under `bin/` by source hash, OS, and architecture. To prebuild or run from a local checkout:
 
 ```sh
 bun install --omit peer --ignore-scripts
@@ -22,21 +20,17 @@ node build.mjs
 pi -e ./index.ts --tools read,codemode
 ```
 
-## Verify the running engine
+## Runtime probe
 
-Ask Pi: **“Call `codemode` with the following script and show me the tool result.”**
+Call `codemodeRuntime()` inside a script to inspect the active runtime:
 
 ```js
-return globalThis.codemodeRuntime?.() ?? 'No pi-moejs runtime probe';
+return codemodeRuntime();
 ```
 
-With this extension (0.3.0+), a native function in the executing Go helper returns `engine` (`moejs`), `module` (`github.com/MoeForge/moejs`), `version` (such as `v0.1.1`), and `pid`. The module comes from the active runtime's Go type and the version from the running binary's build information (null when unavailable). Stock Pi QuickJS and older plugin versions have no probe; absence alone does not identify an engine.
+Returns `{ engine, module, version, pid }`: `"moejs"`, `"github.com/MoeForge/moejs"`, the Go module version, and the helper process PID.
 
-For an independent check on macOS/Linux, run `ps -p <pid> -o pid=,comm=` in a terminal before the helper idles out. The PID should identify `moejs-helper`. This diagnoses which local backend answered; it is not cryptographic attestation against a modified host.
-
-## Script example
-
-This is the `code` argument to `codemode`. Only the summary goes back to the model.
+## Script environment
 
 ```js
 const paths = ['package.json', 'README.md'];
@@ -44,16 +38,19 @@ const files = await Promise.all(paths.map(path => tools.read({ path, limit: 20 }
 return paths.map((path, i) => ({ path, characters: files[i].length }));
 ```
 
-- `ALL_TOOLS` lists callable tool names and signatures. `tools.<name>(args)` goes through Pi's nested tool pipeline, including validation and permission hooks. A tool can still read files or use the network if the Pi session allows it; the JavaScript runtime itself has no Node APIs, timers or `fetch`.
-- Use `return`, `text()`, `image()`, `console.*` or `exit()`. `store(key, value)` / `load(key)` keep JSON data on the current Pi session branch after a successful script. This uses Pi's `codemode-store` entries, so values written by stock `codemode` remain available and vice versa. The old 0.1.x `moe_codemode` store is not merged into it.
-- Set script options on the first line, e.g. `// @options: {"timeout_ms": 10000, "max_output_tokens": 2000}`. The default deadline is 60 seconds (maximum 10 minutes), excluding initial helper compilation. The text budget is approximate. Omitted text is not saved to a spill file.
-- Each script gets a fresh VM with a 256 MiB MoeJS memory limit. One local Go process is reused per extension instance. Scripts execute sequentially; tool calls **inside** a script may run concurrently. Cancellation or timeout kills the busy helper and aborts pending nested calls; it cannot undo completed tool side effects. An idle helper exits after 60 seconds, or on session shutdown.
-- This is not full `codemode` compatibility. No `models.*`, tool-search helpers, deterministic replay or native codemode-only prompt mode. If a workflow needs those features, remove the extension and reload to restore the built-in tool.
+- `tools.<name>(args)` runs through Pi's tool pipeline, including validation and permission hooks. `ALL_TOOLS` lists callable names and signatures. The JS VM has no Node APIs, timers, or `fetch`.
+- Scripts can output via `return`, `text()`, `image()`, `console.*`, and `exit()`. `store(key, value)` and `load(key)` persist JSON values on the current session branch using Pi's `codemode-store` entries.
+- First-line options: `// @options: {"timeout_ms": 10000, "max_output_tokens": 2000}`. Timeout defaults to 60s (max 10m); output budget defaults to 10,000 tokens (max 50,000).
+- Each script runs in a fresh MoeJS VM with a 256 MiB memory limit inside a reused local helper process. Scripts run sequentially while nested tool calls can run concurrently. Idle helpers exit after 60s or on session shutdown.
+- Not included: `models.*`, tool-search helpers, deterministic replay, and codemode-only prompt mode.
 
-## When it helps
+## Development
 
-A local prototype comparison on an Apple M4 Max (Pi 1.6.0, MoeJS 0.1.1; 60 warm samples per scenario) found median latency of 20.81 ms with stock Pi versus 3.68 ms with the MoeJS sidecar for four parallel local file reads. A tool waiting 250 ms took 272.78 ms versus 253.73 ms. Keeping a QuickJS worker alive without changing engines also gave 5.34 ms on the file-read workload. These are prototype measurements, **not** a benchmark of this release or a claim about model latency. First-time Go compilation is not included.
+```sh
+bun run lint
+bun run test
+```
 
 ## License
 
-MIT. The embedded JS prelude is from `@earendil-works/pi-codemode` 1.6.0, with its [original license](native/PI-LICENSE). The helper uses MoeJS 0.1.1.
+MIT. `native/prelude.js` is vendored from `@earendil-works/pi-codemode` 1.6.0 under [its original license](native/PI-LICENSE).
